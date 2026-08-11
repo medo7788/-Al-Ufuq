@@ -1,0 +1,8 @@
+{
+  "name": "Remix الأفق - Al-Ufuq",
+  "description": "الأفق - رفيقك الإسلامي اليومي الذكي والهادئ",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
