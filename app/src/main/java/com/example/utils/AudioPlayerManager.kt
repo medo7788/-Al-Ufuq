@@ -36,19 +36,35 @@ class AudioPlayerManager(private val context: Context) {
                 )
                 setDataSource(url)
                 setOnPreparedListener { mp ->
-                    mp.start()
-                    _audioState.value = AudioState(isPlaying = true, currentTitle = title, isLoading = false)
+                    try {
+                        mp.start()
+                        _audioState.value = AudioState(isPlaying = true, currentTitle = title, isLoading = false)
+                    } catch (e: Exception) {
+                        Log.e("AudioPlayerManager", "Error starting player: ${e.message}")
+                        _audioState.value = AudioState(isPlaying = false, currentTitle = "", isLoading = false, error = "تعذر بدء الصوت")
+                    }
                 }
                 setOnCompletionListener {
                     _audioState.value = AudioState(isPlaying = false, currentTitle = "")
+                    stopAudio()
                 }
-                setOnErrorListener { _, _, _ ->
+                setOnErrorListener { mp, what, extra ->
+                    Log.e("AudioPlayerManager", "MediaPlayer error: what=$what, extra=$extra")
                     _audioState.value = AudioState(
                         isPlaying = false,
                         currentTitle = "",
                         isLoading = false,
                         error = "تعذر تشغيل الصوت"
                     )
+                    try {
+                        mp.reset()
+                        mp.release()
+                    } catch (e: Exception) {
+                        Log.w("AudioPlayerManager", "Error resetting player on error: ${e.message}")
+                    }
+                    if (mediaPlayer == mp) {
+                        mediaPlayer = null
+                    }
                     true
                 }
                 prepareAsync()
@@ -61,24 +77,48 @@ class AudioPlayerManager(private val context: Context) {
 
     fun togglePlayPause() {
         mediaPlayer?.let { player ->
-            if (player.isPlaying) {
-                player.pause()
-                _audioState.value = _audioState.value.copy(isPlaying = false)
-            } else {
-                player.start()
-                _audioState.value = _audioState.value.copy(isPlaying = true)
+            try {
+                if (player.isPlaying) {
+                    player.pause()
+                    _audioState.value = _audioState.value.copy(isPlaying = false)
+                } else {
+                    player.start()
+                    _audioState.value = _audioState.value.copy(isPlaying = true)
+                }
+            } catch (e: Exception) {
+                Log.e("AudioPlayerManager", "Error toggling play/pause: ${e.message}")
             }
         }
     }
 
     fun stopAudio() {
         try {
-            mediaPlayer?.stop()
-            mediaPlayer?.release()
+            mediaPlayer?.let { player ->
+                player.setOnPreparedListener(null)
+                player.setOnCompletionListener(null)
+                player.setOnErrorListener(null)
+                if (player.isPlaying) {
+                    try {
+                        player.stop()
+                    } catch (e: Exception) {
+                        Log.w("AudioPlayerManager", "Exception calling stop(): ${e.message}")
+                    }
+                }
+                try {
+                    player.reset()
+                } catch (e: Exception) {
+                    Log.w("AudioPlayerManager", "Exception calling reset(): ${e.message}")
+                }
+                try {
+                    player.release()
+                } catch (e: Exception) {
+                    Log.w("AudioPlayerManager", "Exception calling release(): ${e.message}")
+                }
+            }
             mediaPlayer = null
             _audioState.value = AudioState(isPlaying = false, currentTitle = "")
         } catch (e: Exception) {
-            Log.e("AudioPlayerManager", "Error stopping audio: ${e.message}")
+            Log.e("AudioPlayerManager", "Error in stopAudio: ${e.message}")
         }
     }
 }

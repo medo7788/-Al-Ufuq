@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -24,6 +26,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -33,6 +37,9 @@ import com.example.data.models.AdhkarItem
 import com.example.data.models.QuranSurah
 import com.example.ui.theme.*
 import com.example.ui.viewmodels.AlUfuqViewModel
+import com.example.utils.QiblaCalculator
+import com.example.utils.QiblaStatus
+
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -326,7 +333,9 @@ private fun PrayerTimesTab(viewModel: AlUfuqViewModel) {
 // --- 2. Quran Tab ---
 @Composable
 private fun QuranTab(viewModel: AlUfuqViewModel) {
-    val surahsList = viewModel.surahsList
+    val surahsList by viewModel.surahsList.collectAsState()
+    val isQuranLoading by viewModel.isQuranLoading.collectAsState()
+    val bookmarks by viewModel.bookmarks.collectAsState()
     val readingVerses by viewModel.readingVerses.collectAsState()
     val selectedSurahNum by viewModel.selectedSurahNumber.collectAsState()
     val audioState by viewModel.audioState.collectAsState()
@@ -442,19 +451,44 @@ private fun QuranTab(viewModel: AlUfuqViewModel) {
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(28.dp)
-                                        .clip(CircleShape)
-                                        .background(TerracottaSunset.copy(alpha = 0.2f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "${verse.verseNumber}",
-                                        color = TerracottaSunset,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 11.sp
-                                    )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .background(TerracottaSunset.copy(alpha = 0.2f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "${verse.verseNumber}",
+                                            color = TerracottaSunset,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    val isBookmarked = bookmarks.any { b ->
+                                        b.surahNumber == verse.surahNumber && b.ayahNumber == verse.verseNumber
+                                    }
+                                    IconButton(
+                                        onClick = {
+                                            viewModel.toggleBookmark(
+                                                verse.surahNumber,
+                                                currentSurah?.nameArabic ?: "",
+                                                verse.verseNumber,
+                                                verse.textArabic
+                                            )
+                                        },
+                                        modifier = Modifier.size(28.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isBookmarked) Icons.Default.Bookmark else Icons.Default.BookmarkBorder,
+                                            contentDescription = "حفظ الآية",
+                                            tint = if (isBookmarked) SacredGold else (if (isParchmentTheme) ParchmentDarkText.copy(alpha = 0.5f) else WarmIvory.copy(alpha = 0.5f))
+                                        )
+                                    }
                                 }
 
                                 Text(
@@ -854,7 +888,40 @@ private fun TasbeehTab(viewModel: AlUfuqViewModel) {
 // --- 5. Qibla Tab ---
 @Composable
 private fun QiblaTab(viewModel: AlUfuqViewModel) {
+    val qiblaState by viewModel.qiblaState.collectAsState()
     val selectedCity by viewModel.selectedCity.collectAsState()
+    val haptic = LocalHapticFeedback.current
+
+    // Trigger haptic feedback when aligned
+    LaunchedEffect(qiblaState.isAligned) {
+        if (qiblaState.isAligned) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        }
+    }
+
+    val animatedDialRotation by animateFloatAsState(
+        targetValue = -qiblaState.deviceHeading,
+        animationSpec = tween(durationMillis = 300),
+        label = "dial_rotation"
+    )
+
+    val animatedNeedleRotation by animateFloatAsState(
+        targetValue = qiblaState.relativeQiblaAngle,
+        animationSpec = tween(durationMillis = 300),
+        label = "needle_rotation"
+    )
+
+    val distanceKm = remember(qiblaState.latitude, qiblaState.longitude) {
+        val results = FloatArray(1)
+        android.location.Location.distanceBetween(
+            qiblaState.latitude,
+            qiblaState.longitude,
+            QiblaCalculator.KAABA_LATITUDE,
+            QiblaCalculator.KAABA_LONGITUDE,
+            results
+        )
+        (results[0] / 1000f).toInt()
+    }
 
     Column(
         modifier = Modifier
@@ -871,14 +938,24 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
                 fontWeight = FontWeight.Bold,
                 fontSize = 22.sp
             )
+            Spacer(modifier = Modifier.height(4.dp))
+            val subtitleText = when (qiblaState.status) {
+                QiblaStatus.CALIBRATING -> "جاري معايرة الحساس... قم بتدوير الهاتف على شكل 8 ♾️"
+                QiblaStatus.LOCATING -> "جاري تحديد الموقع وحساب زاوية القبلة..."
+                QiblaStatus.SENSOR_UNAVAILABLE -> "مستشعر البوصلة غير متاح (استخدام الزاوية المحسوبة)"
+                QiblaStatus.PERMISSION_MISSING -> "يرجى السماح بالموقع لحساب القبلة بدقة"
+                QiblaStatus.LOCATION_UNAVAILABLE -> "الموقع غير متاح حالياً"
+                QiblaStatus.READY -> if (qiblaState.isAligned) "أنت باتجاه القبلة مباشرة ✨" else "وجّه أعلى الهاتف نحو الرمز الذهبي ليتطابق مع القبلة"
+            }
             Text(
-                text = "وجّه الهاتف نحو الرمز ليتطابق مع القبلة",
+                text = subtitleText,
                 style = MaterialTheme.typography.bodySmall,
-                color = WarmIvory.copy(alpha = 0.6f)
+                color = if (qiblaState.isAligned) EmeraldGreen else WarmIvory.copy(alpha = 0.7f),
+                textAlign = TextAlign.Center
             )
         }
 
-        // Live Compass Ring with 72 Ticks & Qibla Needle
+        // Live Sensor-Driven Compass Ring & Qibla Pointer
         Box(
             modifier = Modifier.size(260.dp),
             contentAlignment = Alignment.Center
@@ -887,47 +964,54 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
                 val center = Offset(size.width / 2f, size.height / 2f)
                 val radius = size.width / 2f - 10f
 
-                // Outer Ring
+                // Outer Ring with glow on alignment
                 drawCircle(
-                    color = Color(0xFFF3ECE0).copy(alpha = 0.12f),
+                    color = if (qiblaState.isAligned) SacredGold.copy(alpha = 0.3f) else Color(0xFFF3ECE0).copy(alpha = 0.12f),
                     radius = radius,
-                    style = Stroke(width = 2f)
+                    style = Stroke(width = if (qiblaState.isAligned) 4f else 2f)
                 )
 
-                // 72 Compass Ticks
-                for (i in 0 until 72) {
-                    val isMajor = i % 9 == 0
-                    val angle = i * 5f
-                    rotate(angle, center) {
-                        drawLine(
-                            color = Color(0xFFF3ECE0).copy(alpha = if (isMajor) 0.5f else 0.2f),
-                            start = Offset(center.x, center.y - radius),
-                            end = Offset(center.x, center.y - radius + if (isMajor) 12f else 6f),
-                            strokeWidth = if (isMajor) 2f else 1f
-                        )
+                // 72 Compass Ticks rotated by device heading
+                rotate(animatedDialRotation, center) {
+                    for (i in 0 until 72) {
+                        val isMajor = i % 9 == 0
+                        val angle = i * 5f
+                        rotate(angle, center) {
+                            drawLine(
+                                color = Color(0xFFF3ECE0).copy(alpha = if (isMajor) 0.6f else 0.2f),
+                                start = Offset(center.x, center.y - radius),
+                                end = Offset(center.x, center.y - radius + if (isMajor) 12f else 6f),
+                                strokeWidth = if (isMajor) 2f else 1f
+                            )
+                        }
                     }
                 }
 
-                // Kaaba Icon Marker Position (Angle 134°)
-                rotate(134f, center) {
+                // Kaaba Icon Marker Position (Rotated relative to device heading)
+                rotate(animatedNeedleRotation, center) {
                     drawCircle(
                         color = SacredGold,
-                        radius = 8f,
+                        radius = 10f,
                         center = Offset(center.x, center.y - radius + 18f)
                     )
                 }
 
-                // Qibla Needle Pointer
-                rotate(134f, center) {
+                // Qibla Needle Pointer (Rotated relative to device heading)
+                rotate(animatedNeedleRotation, center) {
                     val needlePath = Path().apply {
                         moveTo(center.x, center.y - radius + 30f)
-                        lineTo(center.x - 6f, center.y)
-                        lineTo(center.x + 6f, center.y)
+                        lineTo(center.x - 7f, center.y)
+                        lineTo(center.x + 7f, center.y)
                         close()
                     }
                     drawPath(
                         path = needlePath,
-                        brush = Brush.verticalGradient(listOf(SacredGold, TerracottaSunset))
+                        brush = Brush.verticalGradient(
+                            listOf(
+                                if (qiblaState.isAligned) EmeraldGreen else SacredGold,
+                                TerracottaSunset
+                            )
+                        )
                     )
                 }
             }
@@ -938,17 +1022,21 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
                     .size(46.dp)
                     .clip(CircleShape)
                     .background(ObsidianNavy)
-                    .border(1.dp, SacredGold.copy(alpha = 0.4f), CircleShape),
+                    .border(
+                        1.dp,
+                        if (qiblaState.isAligned) EmeraldGreen else SacredGold.copy(alpha = 0.4f),
+                        CircleShape
+                    ),
                 contentAlignment = Alignment.Center
             ) {
-                Text("🧭", fontSize = 20.sp)
+                Text(if (qiblaState.isAligned) "🕋" else "🧭", fontSize = 20.sp)
             }
         }
 
         // Readout & Stats
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = "١٣٤°",
+                text = "${qiblaState.qiblaBearing.toInt()}°",
                 style = MaterialTheme.typography.displayMedium,
                 color = WarmIvory,
                 fontWeight = FontWeight.Light,
@@ -962,11 +1050,11 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
                 horizontalArrangement = Arrangement.SpaceEvenly
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("١,٢٤٩ كم", color = SacredGold, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("$distanceKm كم", color = SacredGold, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text("المسافة للكعبة", color = WarmIvory.copy(alpha = 0.5f), fontSize = 10.sp)
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(selectedCity, color = SacredGold, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text(qiblaState.locationName.ifEmpty { selectedCity }, color = SacredGold, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                     Text("موقعك الحالي", color = WarmIvory.copy(alpha = 0.5f), fontSize = 10.sp)
                 }
             }
@@ -975,3 +1063,4 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
         Spacer(modifier = Modifier.height(10.dp))
     }
 }
+

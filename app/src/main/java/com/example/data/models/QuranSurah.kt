@@ -6,8 +6,9 @@ data class QuranSurah(
     val nameEnglish: String,
     val totalVerses: Int,
     val revelationType: String, // "مكية" or "مدنية"
-    val juzNumber: Int,
-    val pageNumber: Int
+    val juzNumber: Int = 1,
+    val pageNumber: Int = 1,
+    val ayahs: List<QuranVerse> = emptyList()
 )
 
 data class QuranVerse(
@@ -15,5 +16,8 @@ data class QuranVerse(
     val verseNumber: Int,
     val textArabic: String,
     val translationArabic: String = "",
-    val tafsirShort: String = ""
+    val tafsirShort: String = "",
+    val juz: Int = 1,
+    val page: Int = 1,
+    val sajda: Boolean = false
 )
