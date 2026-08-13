@@ -13,6 +13,29 @@ import java.util.*
 
 class AlUfuqRepository(private val dao: AlUfuqDao) {
 
+    /** Exposes the DAO for one-time asset seeding (e.g. QuranSeeder). */
+    fun dao(): AlUfuqDao = dao
+
+    companion object {
+        private const val BISMILLAH = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ"
+
+        /**
+         * The Quran API embeds "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ" inside ayah 1's text
+         * for every surah except At-Tawbah (9) — and the reading screen ALSO shows it as a
+         * fixed header above the verse list, which duplicated it on screen. Al-Fatiha (1) is
+         * the one case where the Bismillah genuinely IS the counted verse 1, so it must stay.
+         */
+        fun stripDuplicateBismillah(surahNumber: Int, verseNumber: Int, text: String): String {
+            if (verseNumber != 1 || surahNumber == 1 || surahNumber == 9) return text
+            val trimmed = text.trim()
+            return if (trimmed.startsWith(BISMILLAH)) {
+                trimmed.removePrefix(BISMILLAH).trim()
+            } else {
+                text
+            }
+        }
+    }
+
     // --- Quran Data ---
     val quranProgress: Flow<QuranProgressEntity?> = dao.getQuranProgress()
 
@@ -135,7 +158,7 @@ class AlUfuqRepository(private val dao: AlUfuqDao) {
                 QuranVerse(
                     surahNumber = it.surahNumber,
                     verseNumber = it.numberInSurah,
-                    textArabic = it.textArabic,
+                    textArabic = stripDuplicateBismillah(it.surahNumber, it.numberInSurah, it.textArabic),
                     translationArabic = "",
                     tafsirShort = "",
                     juz = it.juz,
@@ -180,7 +203,7 @@ class AlUfuqRepository(private val dao: AlUfuqDao) {
                     QuranVerse(
                         surahNumber = surahNumber,
                         verseNumber = it.numberInSurah,
-                        textArabic = it.text,
+                        textArabic = stripDuplicateBismillah(surahNumber, it.numberInSurah, it.text),
                         translationArabic = "",
                         tafsirShort = "",
                         juz = it.juz,
@@ -219,7 +242,7 @@ class AlUfuqRepository(private val dao: AlUfuqDao) {
                         QuranVerse(
                             surahNumber = it.surahNumber,
                             verseNumber = it.numberInSurah,
-                            textArabic = it.textArabic,
+                            textArabic = stripDuplicateBismillah(it.surahNumber, it.numberInSurah, it.textArabic),
                             translationArabic = "",
                             tafsirShort = "",
                             juz = it.juz,
