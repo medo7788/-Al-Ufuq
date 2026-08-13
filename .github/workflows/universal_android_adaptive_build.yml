@@ -1,0 +1,272 @@
+name: Universal Android Adaptive Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Scan → Analyze → Build → Diagnose
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan project
+        id: scan
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== ANDROID PROJECT SCAN ==="
+          pwd
+          echo
+
+          SETTINGS="$(find . -type f \( -name settings.gradle -o -name settings.gradle.kts \) \
+            -not -path './.git/*' -not -path './.gradle-home/*' | head -1)"
+
+          if [ -z "$SETTINGS" ]; then
+            echo "::error::No settings.gradle or settings.gradle.kts found."
+            exit 1
+          fi
+
+          ROOT="$(dirname "$SETTINGS")"
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_OUTPUT"
+          echo "Project root: $ROOT"
+
+          MANIFEST_COUNT="$(find "$ROOT" -type f -name AndroidManifest.xml \
+            -not -path '*/build/*' | wc -l)"
+
+          if [ "$MANIFEST_COUNT" -eq 0 ]; then
+            echo "::error::No AndroidManifest.xml found."
+            exit 1
+          fi
+
+          echo "Android manifests: $MANIFEST_COUNT"
+          echo
+          echo "Gradle files:"
+          find "$ROOT" -type f \
+            \( -name gradlew -o -name settings.gradle -o -name settings.gradle.kts \
+            -o -name build.gradle -o -name build.gradle.kts \
+            -o -name gradle-wrapper.properties \) \
+            -not -path '*/build/*' | sort
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Prepare Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.scan.outputs.PROJECT_ROOT }}"
+
+          if [ ! -f ./gradlew ]; then
+            echo "::error::gradlew is missing from the project root."
+            exit 1
+          fi
+
+          chmod +x ./gradlew
+
+          echo "=== GRADLE VERSION ==="
+          ./gradlew --version
+
+      - name: Analyze Gradle project
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.scan.outputs.PROJECT_ROOT }}"
+
+          mkdir -p .ci
+
+          echo "=== PROJECTS ==="
+          ./gradlew projects --no-daemon --console=plain \
+            2>&1 | tee .ci/projects.txt
+
+          echo "=== ALL TASKS ==="
+          ./gradlew tasks --all --no-daemon --console=plain \
+            2>&1 | tee .ci/tasks.txt
+
+          echo "=== APPLICATION MODULE DETECTION ==="
+
+          : > .ci/android-modules.txt
+
+          while IFS= read -r file; do
+            module_dir="$(dirname "$file")"
+
+            if grep -Eqs \
+              'com\.android\.application|com\.android\.application\.plugin|id[[:space:]]*\(["'\'']com\.android\.application' \
+              "$file"; then
+              echo "$module_dir" >> .ci/android-modules.txt
+            fi
+          done < <(
+            find . -type f \
+              \( -name build.gradle -o -name build.gradle.kts \) \
+              -not -path './.git/*' \
+              -not -path './.gradle/*' \
+              -not -path './build/*'
+          )
+
+          sort -u .ci/android-modules.txt -o .ci/android-modules.txt
+
+          cat .ci/android-modules.txt
+
+          if [ ! -s .ci/android-modules.txt ]; then
+            echo "::error::No Android application module was detected."
+            exit 1
+          fi
+
+      - name: Select Android build task
+        id: task
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${{ steps.scan.outputs.PROJECT_ROOT }}"
+
+          TASK=""
+
+          # Prefer the conventional app module.
+          if grep -Eq '^[[:space:]]*app:assembleDebug([[:space:]]|$)' .ci/tasks.txt; then
+            TASK=":app:assembleDebug"
+          fi
+
+          # Otherwise detect any Android application module exposing assembleDebug.
+          if [ -z "$TASK" ]; then
+            while IFS= read -r module; do
+              [ -z "$module" ] && continue
+
+              module_name="${module#./}"
+              module_name="${module_name//\//:}"
+
+              if [ "$module_name" = "." ]; then
+                candidate=":assembleDebug"
+              else
+                candidate=":${module_name}:assembleDebug"
+              fi
+
+              if grep -Fq "${candidate#:}" .ci/tasks.txt || \
+                 grep -Fq "$candidate" .ci/tasks.txt; then
+                TASK="$candidate"
+                break
+              fi
+            done < .ci/android-modules.txt
+          fi
+
+          # Final reliable fallback: inspect Gradle's task list for any
+          # task ending in :assembleDebug.
+          if [ -z "$TASK" ]; then
+            FOUND="$(grep -Eo '[A-Za-z0-9_.-]+:assembleDebug' .ci/tasks.txt | head -1 || true)"
+            if [ -n "$FOUND" ]; then
+              TASK=":$FOUND"
+            fi
+          fi
+
+          if [ -z "$TASK" ]; then
+            echo "No assembleDebug task found; checking release tasks."
+
+            FOUND="$(grep -Eo '[A-Za-z0-9_.-]+:assembleRelease' .ci/tasks.txt | head -1 || true)"
+
+            if [ -n "$FOUND" ]; then
+              TASK=":$FOUND"
+            fi
+          fi
+
+          if [ -z "$TASK" ]; then
+            echo "::error::No Android assembleDebug or assembleRelease task was detected."
+            exit 1
+          fi
+
+          echo "Selected Gradle task: $TASK"
+          echo "BUILD_TASK=$TASK" >> "$GITHUB_OUTPUT"
+
+      - name: Build APK
+        id: build
+        shell: bash
+        run: |
+          set +e
+          cd "${{ steps.scan.outputs.PROJECT_ROOT }}"
+
+          mkdir -p .ci
+
+          TASK="${{ steps.task.outputs.BUILD_TASK }}"
+
+          echo "=== BUILD ==="
+          echo "Task: $TASK"
+
+          ./gradlew "$TASK" \
+            --no-daemon \
+            --console=plain \
+            --stacktrace \
+            --warning-mode=all \
+            2>&1 | tee .ci/build.log
+
+          STATUS=${PIPESTATUS[0]}
+
+          echo "BUILD_STATUS=$STATUS" >> "$GITHUB_OUTPUT"
+
+          if [ "$STATUS" -eq 0 ]; then
+            exit 0
+          fi
+
+          echo
+          echo "=== BUILD FAILURE ANALYSIS ==="
+
+          {
+            echo "FAILED TASK:"
+            grep -E 'Execution failed for task|FAILURE:|BUILD FAILED' .ci/build.log | tail -50 || true
+
+            echo
+            echo "ROOT CAUSE:"
+            grep -nA25 -E 'What went wrong:|\* What went wrong:' .ci/build.log | head -100 || true
+
+            echo
+            echo "CAUSED BY:"
+            grep -nA15 'Caused by:' .ci/build.log | head -100 || true
+
+            echo
+            echo "IMPORTANT ERRORS:"
+            grep -Ei \
+              'error:|e: |exception|failed|cannot|could not|unsupported|incompatible|duplicate class|unresolved reference' \
+              .ci/build.log | tail -200 || true
+          } | tee .ci/failure-analysis.txt
+
+          exit "$STATUS"
+
+      - name: Upload APK
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK
+          path: |
+            ${{ steps.scan.outputs.PROJECT_ROOT }}/**/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-Build-Diagnostics
+          path: |
+            ${{ steps.scan.outputs.PROJECT_ROOT }}/.ci/**
+          if-no-files-found: warn
+          retention-days: 7
