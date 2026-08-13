@@ -1,0 +1,374 @@
+name: Universal Adaptive Android Build & Repair
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: universal-android-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      MAX_REPAIR_ATTEMPTS: "4"
+      GRADLE_USER_HOME: ${{ github.workspace }}/.gradle-home
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Initial project scan
+        id: scan
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .ci
+          {
+            echo "=== UNIVERSAL PROJECT SCAN ==="
+            echo "Date: $(date -u)"
+            echo "OS: $(. /etc/os-release && echo "$PRETTY_NAME")"
+            echo "Architecture: $(uname -m)"
+            echo "CPU: $(nproc)"
+            echo "Memory:"
+            free -h
+            echo
+            echo "Java:"
+            java -version 2>&1
+            echo
+            echo "Root:"
+            pwd
+            echo
+            echo "Top-level:"
+            ls -la
+            echo
+            echo "Gradle wrappers:"
+            find . -type f -name gradlew -not -path './.git/*' -print
+            echo
+            echo "Settings:"
+            find . -type f \( -name 'settings.gradle' -o -name 'settings.gradle.kts' \) -not -path './.git/*' -print
+            echo
+            echo "Build files:"
+            find . -type f \( -name 'build.gradle' -o -name 'build.gradle.kts' \) -not -path './.git/*' -print
+            echo
+            echo "Android manifests:"
+            find . -type f -name AndroidManifest.xml -not -path './.git/*' -print
+            echo
+            echo "Flutter:"
+            test -f pubspec.yaml && echo "Flutter project detected" || true
+            echo
+            echo "Version catalogs:"
+            find . -type f -name libs.versions.toml -not -path './.git/*' -print
+            echo
+            echo "Wrapper properties:"
+            find . -type f -name gradle-wrapper.properties -not -path './.git/*' -exec sh -c 'echo "--- $1"; cat "$1"' _ {} \;
+          } | tee .ci/scan.txt
+
+          if find . -type f \( -name AndroidManifest.xml -o -name settings.gradle -o -name settings.gradle.kts \) -not -path './.git/*' | grep -q .; then
+            echo "android=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "android=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Select Android toolchain
+        if: steps.scan.outputs.android == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p .ci
+
+          # Read the project's Gradle distribution when available.
+          WRAPPER_PROPS="$(find . -type f -name gradle-wrapper.properties -not -path './.git/*' | head -1 || true)"
+          GRADLE_VERSION=""
+
+          if [ -n "$WRAPPER_PROPS" ]; then
+            GRADLE_VERSION="$(grep -oE 'gradle-[0-9]+(\.[0-9]+){1,2}' "$WRAPPER_PROPS" \
+              | head -1 | sed 's/gradle-//' || true)"
+          fi
+
+          # Conservative fallback only when the repository provides no usable
+          # wrapper information. This is not used to override a valid wrapper.
+          if [ -z "$GRADLE_VERSION" ]; then
+            GRADLE_VERSION="8.7"
+            echo "No usable wrapper version found; fallback Gradle: $GRADLE_VERSION"
+          else
+            echo "Detected Gradle version: $GRADLE_VERSION"
+          fi
+
+          echo "GRADLE_VERSION=$GRADLE_VERSION" >> "$GITHUB_ENV"
+
+          # JDK selection is based on the detected Gradle generation.
+          MAJOR="${GRADLE_VERSION%%.*}"
+          if [ "$MAJOR" -ge 9 ]; then
+            JDK_VERSION="17"
+          elif [ "$MAJOR" -ge 8 ]; then
+            JDK_VERSION="17"
+          else
+            JDK_VERSION="11"
+          fi
+
+          echo "JDK_VERSION=$JDK_VERSION" >> "$GITHUB_ENV"
+
+          {
+            echo "Detected toolchain"
+            echo "Gradle=$GRADLE_VERSION"
+            echo "JDK=$JDK_VERSION"
+          } | tee .ci/toolchain.txt
+
+      - name: Setup detected JDK
+        if: steps.scan.outputs.android == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JDK_VERSION }}
+          cache: gradle
+
+      - name: Prepare Gradle
+        if: steps.scan.outputs.android == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Prefer the repository wrapper whenever it exists.
+          WRAPPER="$(find . -type f -name gradlew -not -path './.git/*' | head -1 || true)"
+
+          if [ -n "$WRAPPER" ]; then
+            echo "Using existing Gradle Wrapper: $WRAPPER"
+            chmod +x "$WRAPPER"
+
+            if ! "$WRAPPER" --version; then
+              echo "Wrapper failed validation."
+              exit 1
+            fi
+
+            echo "GRADLE_CMD=$WRAPPER" >> "$GITHUB_ENV"
+          else
+            echo "No gradlew found. Installing the detected Gradle distribution."
+
+            wget -q "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"
+            unzip -q "gradle-${GRADLE_VERSION}-bin.zip"
+            echo "$PWD/gradle-${GRADLE_VERSION}/bin" >> "$GITHUB_PATH"
+
+            gradle --version
+
+            # If settings exist, create a wrapper without changing build files.
+            ROOT_SETTINGS="$(find . -maxdepth 2 -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -1 || true)"
+            if [ -n "$ROOT_SETTINGS" ]; then
+              gradle wrapper --gradle-version "$GRADLE_VERSION" || true
+            fi
+
+            if [ -f ./gradlew ]; then
+              chmod +x ./gradlew
+              echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
+            else
+              echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
+            fi
+          fi
+
+      - name: Safe project repair
+        if: steps.scan.outputs.android == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          chmod +x ./gradlew 2>/dev/null || true
+
+          # Remove only generated build state; never delete source code.
+          find . -type d \( -name build -o -name .gradle \) \
+            -not -path './.git/*' \
+            -prune -exec rm -rf {} + 2>/dev/null || true
+
+          # Restore executable permission after cleanup.
+          chmod +x ./gradlew 2>/dev/null || true
+
+          echo "Safe repair phase completed."
+
+      - name: Detect Android modules
+        if: steps.scan.outputs.android == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci
+
+          {
+            echo "=== ANDROID MODULES ==="
+            find . -type f -name AndroidManifest.xml \
+              -not -path './.git/*' \
+              -print \
+              -exec dirname {} \; | sort -u
+
+            echo
+            echo "=== APPLICATION PLUGINS ==="
+            grep -RniE \
+              "com.android.application|com.android.library" \
+              --include='*.gradle' \
+              --include='*.gradle.kts' \
+              --exclude-dir=.git \
+              . 2>/dev/null || true
+          } | tee .ci/modules.txt
+
+      - name: Build with adaptive repair loop
+        if: steps.scan.outputs.android == 'true'
+        shell: bash
+        run: |
+          set +e
+
+          CMD="${GRADLE_CMD:-./gradlew}"
+          ATTEMPT=1
+          SUCCESS=0
+
+          while [ "$ATTEMPT" -le "$MAX_REPAIR_ATTEMPTS" ]; do
+            echo
+            echo "=================================================="
+            echo "BUILD ATTEMPT $ATTEMPT / $MAX_REPAIR_ATTEMPTS"
+            echo "=================================================="
+
+            chmod +x ./gradlew 2>/dev/null || true
+
+            BUILD_LOG=".ci/build-attempt-${ATTEMPT}.log"
+
+            "$CMD" assembleDebug \
+              --stacktrace \
+              --no-daemon \
+              --console=plain \
+              2>&1 | tee "$BUILD_LOG"
+
+            STATUS=${PIPESTATUS[0]}
+
+            if [ "$STATUS" -eq 0 ]; then
+              SUCCESS=1
+              echo "BUILD_SUCCESS=true" >> "$GITHUB_ENV"
+              break
+            fi
+
+            echo "Build failed with exit code $STATUS."
+
+            # Classify common recoverable Gradle failures.
+            if grep -Eqi \
+              "Could not resolve|Connection reset|Connection timed out|Could not GET|Could not HEAD|PKIX|Temporary failure|metadata.*could not be retrieved" \
+              "$BUILD_LOG"; then
+
+              echo "Dependency/network failure detected."
+              echo "Retrying with refreshed dependency state..."
+              rm -rf "$GRADLE_USER_HOME/caches/modules-2/files-2.1" 2>/dev/null || true
+
+            elif grep -Eqi \
+              "Permission denied.*gradlew|gradlew.*Permission denied|No such file or directory.*gradlew" \
+              "$BUILD_LOG"; then
+
+              chmod +x ./gradlew 2>/dev/null || true
+
+            elif grep -Eqi \
+              "daemon disappeared|daemon.*crashed|JVM.*crash|OutOfMemoryError" \
+              "$BUILD_LOG"; then
+
+              echo "JVM/daemon instability detected."
+              rm -rf ./*/build .gradle 2>/dev/null || true
+
+            elif grep -Eqi \
+              "wrapper.*jar|GradleWrapperMain|Could not find or load main class org.gradle.wrapper" \
+              "$BUILD_LOG"; then
+
+              echo "Gradle Wrapper problem detected."
+              rm -f gradle/wrapper/gradle-wrapper.jar 2>/dev/null || true
+              gradle wrapper --gradle-version "$GRADLE_VERSION" 2>/dev/null || true
+              chmod +x ./gradlew 2>/dev/null || true
+
+            else
+              echo "Failure does not match a safe automatic repair rule."
+              echo "Stopping to avoid destructive source changes."
+              break
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+
+          if [ "$SUCCESS" -ne 1 ]; then
+            echo "BUILD_SUCCESS=false" >> "$GITHUB_ENV"
+            exit 1
+          fi
+
+      - name: Locate APK outputs
+        if: success() && steps.scan.outputs.android == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .ci/apks
+
+          FOUND=0
+
+          while IFS= read -r apk; do
+            [ -z "$apk" ] && continue
+            FOUND=1
+            echo "APK: $apk"
+            cp "$apk" ".ci/apks/$(basename "$apk")"
+          done < <(
+            find . -type f -name '*.apk' \
+              -path '*/build/outputs/*' \
+              -not -path './.git/*'
+          )
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "No APK was produced."
+            exit 1
+          fi
+
+          ls -lh .ci/apks/
+
+      - name: Generate final report
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "UNIVERSAL ANDROID BUILD REPORT"
+            echo "================================"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Commit: $GITHUB_SHA"
+            echo "Runner: $RUNNER_OS"
+            echo
+            echo "Toolchain:"
+            cat .ci/toolchain.txt 2>/dev/null || true
+            echo
+            echo "Scan:"
+            cat .ci/scan.txt 2>/dev/null || true
+            echo
+            echo "Modules:"
+            cat .ci/modules.txt 2>/dev/null || true
+            echo
+            echo "Build logs:"
+            ls -lh .ci/build-attempt-*.log 2>/dev/null || true
+            echo
+            echo "APK files:"
+            find . -type f -name '*.apk' -not -path './.git/*' -exec ls -lh {} \; 2>/dev/null || true
+          } > .ci/final-report.txt
+
+      - name: Upload APK artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-APK-${{ github.run_number }}
+          path: |
+            .ci/apks/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-Build-Diagnostics-${{ github.run_number }}
+          path: |
+            .ci/
+          if-no-files-found: warn
+          retention-days: 7
