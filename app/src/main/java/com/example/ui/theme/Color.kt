@@ -2,15 +2,18 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// AL-UFUQ Primary Palette - Quiet Luxury & Horizon Theme
-val ObsidianNavy = Color(0xFF0B1026)
-val MidnightNavy = Color(0xFF131A36)
-val DeepNavySurface = Color(0xFF1B2447)
-val CardNavySurface = Color(0xFF232D56)
+// AL-UFUQ Primary Palette — Deep Obsidian & Matte Bronze (chosen direction: Option B)
+// Base surfaces are now neutral near-black instead of navy-tinted, and the
+// "sacred/action" accent is a matte bronze instead of shiny gold — reads as
+// a quiet luxury watch rather than a lamp-and-arabesque cliché.
+val ObsidianNavy = Color(0xFF0A0A0C)
+val MidnightNavy = Color(0xFF131313)
+val DeepNavySurface = Color(0xFF19181A)
+val CardNavySurface = Color(0xFF201F21)
 
-val SacredGold = Color(0xFFE3A857)
-val SoftGold = Color(0xFFF3C77C)
-val MutedGold = Color(0xFF8E7140)
+val SacredGold = Color(0xFFC4AD94)
+val SoftGold = Color(0xFFD9C4A8)
+val MutedGold = Color(0xFF8C7A6B)
 
 val EmeraldGreen = Color(0xFF0E5C56)
 val LightEmerald = Color(0xFF6FD3C7)
@@ -18,10 +21,10 @@ val LightEmerald = Color(0xFF6FD3C7)
 val TerracottaSunset = Color(0xFFC97B4A)
 val SoftCrimson = Color(0xFFD9534F)
 
-val WarmIvory = Color(0xFFF3ECE0)
+val WarmIvory = Color(0xFFEDEAE4)
 val PureWhite = Color(0xFFFFFFFF)
-val MutedText = Color(0xFF9EA6C1)
-val MutedBorder = Color(0xFF2E385E)
+val MutedText = Color(0xFFA8A29A)
+val MutedBorder = Color(0xFF33302C)
 
 // Parchment Quran Reading Palette
 val ParchmentBg = Color(0xFFF3ECE0)
@@ -34,7 +37,10 @@ val SkyMidBlue = Color(0xFF182449)
 val SkyDuskPurple = Color(0xFF3A2B4D)
 val SkySunsetOrange = Color(0xFFC97B4A)
 
-// Horizon Phase Colors
+// Horizon Phase Colors — intentionally UNCHANGED. This per-time-of-day
+// storytelling (violet Fajr, azure Dhuhr, crimson Maghrib, etc.) is the
+// signature "the app breathes with your day" identity and stays exactly
+// as agreed regardless of the base chrome color direction above.
 val FajrVioletStart = Color(0xFF131138)
 val FajrVioletEnd = Color(0xFF2E2660)
 

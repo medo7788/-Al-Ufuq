@@ -44,7 +44,7 @@ private val AlUfuqLightColorScheme = lightColorScheme(
     surface = PureWhite,
     onSurface = ObsidianNavy,
     surfaceVariant = Color(0xFFEBE6DC),
-    onSurfaceVariant = Color(0xFF5A6275),
+    onSurfaceVariant = Color(0xFF6B6459),
     outline = Color(0xFFD4CEC0)
 )
 
