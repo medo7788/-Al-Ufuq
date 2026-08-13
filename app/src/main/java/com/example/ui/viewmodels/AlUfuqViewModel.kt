@@ -211,6 +211,12 @@ class AlUfuqViewModel(
     val dailyGoals: StateFlow<List<GoalItem>> = _dailyGoals.asStateFlow()
 
     init {
+        // Seed the complete offline Quran (6,236 verses) from the bundled asset on
+        // first run, so Quran reading works fully offline from here on.
+        viewModelScope.launch {
+            com.example.data.local.QuranSeeder.seedIfNeeded(application, repository.dao())
+        }
+
         // Load persistent settings & goals from Room
         viewModelScope.launch {
             val settings = repository.getUserSettings()
