@@ -4,6 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -26,6 +27,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
@@ -34,6 +37,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.models.AdhkarItem
+import com.example.data.models.HisnCategory
 import com.example.data.models.QuranSurah
 import com.example.ui.theme.*
 import com.example.ui.viewmodels.AlUfuqViewModel
@@ -48,7 +52,8 @@ enum class WorshipTab(val titleArabic: String, val icon: androidx.compose.ui.gra
     QURAN("القرآن", Icons.Default.MenuBook),
     ADHKAR("الأذكار", Icons.Default.AutoAwesome),
     TASBEEH("المسبحة", Icons.Default.Fingerprint),
-    QIBLA("القبلة", Icons.Default.Explore)
+    QIBLA("القبلة", Icons.Default.Explore),
+    HISN_ALMUSLIM("حصن المسلم", Icons.Default.MenuBook)
 }
 
 @Composable
@@ -119,6 +124,7 @@ fun WorshipScreen(
                 WorshipTab.ADHKAR -> AdhkarTab(viewModel)
                 WorshipTab.TASBEEH -> TasbeehTab(viewModel)
                 WorshipTab.QIBLA -> QiblaTab(viewModel)
+                WorshipTab.HISN_ALMUSLIM -> HisnAlMuslimTab(viewModel)
             }
         }
     }
@@ -412,21 +418,25 @@ private fun QuranTab(viewModel: AlUfuqViewModel) {
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 item {
-                    // Bismillah Header
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ",
-                            style = MaterialTheme.typography.headlineLarge,
-                            color = if (isParchmentTheme) TerracottaSunset else SacredGold,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 24.sp,
-                            textAlign = TextAlign.Center
-                        )
+                    // Bismillah Header — hidden for At-Tawbah (no Bismillah at all) and
+                    // Al-Fatiha (its verse 1 IS the Bismillah, shown in the list below;
+                    // a separate header there would duplicate it).
+                    if (selectedSurahNum != 9 && selectedSurahNum != 1) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "بِسْمِ اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ",
+                                style = MaterialTheme.typography.headlineLarge,
+                                color = if (isParchmentTheme) TerracottaSunset else SacredGold,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 24.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
                 }
 
@@ -819,10 +829,14 @@ private fun TasbeehTab(viewModel: AlUfuqViewModel) {
         }
 
         // Circular 33-Bead Ring Canvas
+        val haptics = LocalHapticFeedback.current
         Box(
             modifier = Modifier
                 .size(240.dp)
-                .clickable { viewModel.incrementTasbeeh() }
+                .clickable {
+                    haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    viewModel.incrementTasbeeh()
+                }
                 .testTag("tasbeeh_bead_ring"),
             contentAlignment = Alignment.Center
         ) {
@@ -831,6 +845,33 @@ private fun TasbeehTab(viewModel: AlUfuqViewModel) {
                 val radius = size.width / 2f - 20f
                 val totalBeads = 33
 
+                // Subtle radial glow so the ring doesn't sit on bare background
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(SacredGold.copy(alpha = 0.07f), Color.Transparent),
+                        center = center,
+                        radius = radius * 1.25f
+                    ),
+                    radius = radius * 1.25f,
+                    center = center
+                )
+
+                // Marker ticks at 0/11/22 — a real tasbih string has a distinct
+                // separator bead every 11, dividing the 33 into three sets.
+                for (marker in listOf(0, 11, 22)) {
+                    val angle = (marker.toFloat() / totalBeads.toFloat()) * 2f * Math.PI - Math.PI / 2f
+                    val innerX = center.x + (radius - 14f) * cos(angle).toFloat()
+                    val innerY = center.y + (radius - 14f) * sin(angle).toFloat()
+                    val outerX = center.x + (radius + 10f) * cos(angle).toFloat()
+                    val outerY = center.y + (radius + 10f) * sin(angle).toFloat()
+                    drawLine(
+                        color = WarmIvory.copy(alpha = 0.25f),
+                        start = Offset(innerX, innerY),
+                        end = Offset(outerX, outerY),
+                        strokeWidth = 1.5f
+                    )
+                }
+
                 for (i in 0 until totalBeads) {
                     val angle = (i.toFloat() / totalBeads.toFloat()) * 2f * Math.PI - Math.PI / 2f
                     val x = center.x + radius * cos(angle).toFloat()
@@ -838,7 +879,7 @@ private fun TasbeehTab(viewModel: AlUfuqViewModel) {
 
                     val isFilled = i < count
                     drawCircle(
-                        color = if (isFilled) SacredGold else Color(0xFFF3ECE0).copy(alpha = 0.15f),
+                        color = if (isFilled) SacredGold else WarmIvory.copy(alpha = 0.15f),
                         radius = if (isFilled) 7f else 5f,
                         center = Offset(x, y)
                     )
@@ -869,10 +910,11 @@ private fun TasbeehTab(viewModel: AlUfuqViewModel) {
             }
         }
 
-        // Reset Button
-        Button(
+        // Reset Button — outlined utility action (not a "time transition", so no Terracotta)
+        OutlinedButton(
             onClick = { viewModel.resetTasbeeh() },
-            colors = ButtonDefaults.buttonColors(containerColor = TerracottaSunset),
+            border = BorderStroke(1.dp, SacredGold.copy(alpha = 0.4f)),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = SacredGold),
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -964,9 +1006,20 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
                 val center = Offset(size.width / 2f, size.height / 2f)
                 val radius = size.width / 2f - 10f
 
+                // Subtle radial glow behind the ring so it doesn't read as bare/empty
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(SacredGold.copy(alpha = 0.08f), Color.Transparent),
+                        center = center,
+                        radius = radius * 1.3f
+                    ),
+                    radius = radius * 1.3f,
+                    center = center
+                )
+
                 // Outer Ring with glow on alignment
                 drawCircle(
-                    color = if (qiblaState.isAligned) SacredGold.copy(alpha = 0.3f) else Color(0xFFF3ECE0).copy(alpha = 0.12f),
+                    color = if (qiblaState.isAligned) SacredGold.copy(alpha = 0.3f) else WarmIvory.copy(alpha = 0.12f),
                     radius = radius,
                     style = Stroke(width = if (qiblaState.isAligned) 4f else 2f)
                 )
@@ -978,11 +1031,33 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
                         val angle = i * 5f
                         rotate(angle, center) {
                             drawLine(
-                                color = Color(0xFFF3ECE0).copy(alpha = if (isMajor) 0.6f else 0.2f),
+                                color = WarmIvory.copy(alpha = if (isMajor) 0.6f else 0.2f),
                                 start = Offset(center.x, center.y - radius),
                                 end = Offset(center.x, center.y - radius + if (isMajor) 12f else 6f),
                                 strokeWidth = if (isMajor) 2f else 1f
                             )
+                        }
+                    }
+                }
+
+                // Cardinal direction letters (N/E/S/W), rotated with the dial like the ticks
+                rotate(animatedDialRotation, center) {
+                    val cardinalRadius = radius - 26f
+                    val cardinals = listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f)
+                    cardinals.forEach { (label, angle) ->
+                        rotate(angle, center) {
+                            drawContext.canvas.nativeCanvas.apply {
+                                val paint = android.graphics.Paint().apply {
+                                    color = WarmIvory.copy(alpha = 0.5f).toArgb()
+                                    textSize = 22f
+                                    textAlign = android.graphics.Paint.Align.CENTER
+                                    isAntiAlias = true
+                                }
+                                save()
+                                rotate(-angle - animatedDialRotation, center.x, center.y - cardinalRadius)
+                                drawText(label, center.x, center.y - cardinalRadius + 8f, paint)
+                                restore()
+                            }
                         }
                     }
                 }
@@ -1063,4 +1138,130 @@ private fun QiblaTab(viewModel: AlUfuqViewModel) {
         Spacer(modifier = Modifier.height(10.dp))
     }
 }
+
+// --- 6. Hisn Al-Muslim Tab (full reference: 132 categories from the book) ---
+@Composable
+private fun HisnAlMuslimTab(viewModel: AlUfuqViewModel) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var categories by remember { mutableStateOf<List<HisnCategory>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var searchQuery by remember { mutableStateOf("") }
+    var expandedCategoryId by remember { mutableStateOf<Int?>(null) }
+
+    LaunchedEffect(Unit) {
+        categories = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.example.data.local.HisnAlMuslimLoader.load(context)
+        }
+        isLoading = false
+    }
+
+    val filtered = remember(categories, searchQuery) {
+        if (searchQuery.isBlank()) categories
+        else categories.filter { cat ->
+            cat.category.contains(searchQuery) || cat.items.any { it.text.contains(searchQuery) }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            placeholder = { Text("ابحث في حصن المسلم (١٣٢ بابًا)...", fontSize = 13.sp) },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = WarmIvory.copy(alpha = 0.5f)) },
+            singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = SacredGold,
+                unfocusedBorderColor = Color.White.copy(alpha = 0.12f),
+                focusedTextColor = WarmIvory,
+                unfocusedTextColor = WarmIvory,
+                cursorColor = SacredGold
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 10.dp)
+        )
+
+        if (isLoading) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = SacredGold, modifier = Modifier.size(28.dp))
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(filtered, key = { it.id }) { cat ->
+                    val isExpanded = expandedCategoryId == cat.id
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(CardNavySurface)
+                            .border(1.dp, Color.White.copy(alpha = 0.06f), RoundedCornerShape(14.dp))
+                            .clickable { expandedCategoryId = if (isExpanded) null else cat.id }
+                            .padding(16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = cat.category,
+                                color = WarmIvory,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "${cat.items.size}",
+                                color = SacredGold,
+                                fontSize = 11.sp
+                            )
+                            Icon(
+                                imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = WarmIvory.copy(alpha = 0.5f),
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        if (isExpanded) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            cat.items.forEach { item ->
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 8.dp)
+                                ) {
+                                    Text(
+                                        text = item.text,
+                                        color = WarmIvory.copy(alpha = 0.9f),
+                                        fontSize = 14.sp,
+                                        lineHeight = 24.sp
+                                    )
+                                    if (item.count > 1) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "يُقال ${item.count} مرات",
+                                            color = TerracottaSunset,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                }
+                                if (item != cat.items.last()) {
+                                    HorizontalDivider(color = Color.White.copy(alpha = 0.06f))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                item { Spacer(modifier = Modifier.height(24.dp)) }
+            }
+        }
+    }
+}
+
 
